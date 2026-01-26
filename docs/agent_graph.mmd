@@ -1,0 +1,39 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	fetch(fetch)
+	filter(filter)
+	embed(embed)
+	cluster(cluster)
+	deduplicate(deduplicate)
+	generate(generate)
+	quality(quality)
+	finalize(finalize)
+	check_existing(check_existing)
+	load_similar(load_similar)
+	save(save)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> fetch;
+	cluster --> deduplicate;
+	embed --> load_similar;
+	finalize --> __end__;k
+	generate --> quality;
+	load_similar --> cluster;
+	quality --> save;
+	save --> finalize;
+	fetch -. &nbsp;continue&nbsp; .-> check_existing;
+	fetch -. &nbsp;end&nbsp; .-> finalize;
+	check_existing -. &nbsp;continue&nbsp; .-> filter;
+	check_existing -. &nbsp;end&nbsp; .-> finalize;
+	filter -. &nbsp;continue&nbsp; .-> embed;
+	filter -. &nbsp;end&nbsp; .-> finalize;
+	deduplicate -. &nbsp;continue&nbsp; .-> generate;
+	deduplicate -. &nbsp;end&nbsp; .-> finalize;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+

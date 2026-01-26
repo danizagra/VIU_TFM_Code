@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-01-23T10:20:00.723458",
+  "dataset_size": 25,
+  "db_articles": 915,
+  "retrieval": {
+    "precision_at_5": 1.0,
+    "hit_rate": 1.0,
+    "mrr": 1.0,
+    "avg_similarity": 0.6920384234807176
+  },
+  "generation": {
+    "lm_studio": {
+      "confidence": 0.8207205082701268,
+      "topic_coverage": 0.52,
+      "citations_used": 2.8,
+      "faithfulness": 0.47500000000000003
+    },
+    "deepseek": {
+      "confidence": 0.862951395732663,
+      "topic_coverage": 0.59,
+      "citations_used": 4.4,
+      "faithfulness": 0.76
+    }
+  },
+  "reranking_comparison": {
+    "without": 0.8207205082701268,
+    "with": 0.8406613146286546,
+    "improvement": 0.019940806358527796
+  },
+  "fact_checking": {
+    "sample_size": 10,
+    "total_claims": 54,
+    "supported_claims": 40,
+    "unsupported_claims": 14,
+    "avg_hallucination_rate": 0.23499999999999996,
+    "claims_per_response": 5.4
+  }
+}

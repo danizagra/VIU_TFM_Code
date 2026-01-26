@@ -1,0 +1,95 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# === Virtual Environments ===
+.env
+.venv
+env/
+venv/
+ENV/
+
+# === Poetry ===
+poetry.lock
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# === Claude Code local files (not for remote repo) ===
+CLAUDE.md
+PLAN.md
+.claude/
+docs/*.md
+
+# === Tests (not ready) ===
+tests/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# === Testing ===
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.nox/
+
+# === MyPy ===
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# === Logs ===
+*.log
+logs/
+
+# === Data (large files) ===
+data/exports/*.json
+data/exports/*.csv
+*.pkl
+*.pickle
+
+# === Models (large files) ===
+models/
+*.bin
+*.pt
+*.onnx
+
+# === Secrets ===
+.env
+.env.local
+.env.*.local
+secrets/
+credentials.json
+
+# === Database ===
+*.db
+*.sqlite3
+database/
+
+# === Alembic ===
+alembic/versions/*.pyc
