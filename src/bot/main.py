@@ -19,6 +19,9 @@ from src.config.settings import settings
 
 logger = structlog.get_logger()
 
+MAX_RETRIES = 5
+RETRY_BASE_DELAY = 3
+
 
 async def main() -> None:
     """Initialize and start the bot."""
@@ -44,8 +47,30 @@ async def main() -> None:
     dp.include_router(news_router)
     dp.include_router(ask_router)  # Must be last - catches all text
 
-    # Log bot info
-    bot_info = await bot.get_me()
+    # Connect to Telegram with retry logic for network issues
+    bot_info = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            bot_info = await bot.get_me()
+            break
+        except Exception as e:
+            delay = RETRY_BASE_DELAY * attempt
+            logger.warning(
+                "Failed to connect to Telegram",
+                attempt=attempt,
+                max_retries=MAX_RETRIES,
+                error=str(e),
+                retry_in=delay,
+            )
+            if attempt == MAX_RETRIES:
+                logger.error(
+                    "Could not connect to Telegram after multiple attempts. "
+                    "Check your internet connection."
+                )
+                await bot.session.close()
+                sys.exit(1)
+            await asyncio.sleep(delay)
+
     logger.info(
         "Bot initialized",
         username=bot_info.username,

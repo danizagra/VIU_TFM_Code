@@ -1,0 +1,39 @@
+---
+config:
+  theme: base
+  themeVariables:
+    fontSize: "16px"
+    lineColor: "#555"
+---
+graph LR
+    FUENTES["📡 Fuentes de Datos<br/>RSS | NewsAPI | GNews"]
+    AGENT["⚙️ Agente Periodístico<br/>Recolección → Procesamiento NLP → Generación"]
+    LLM["🧠 Capa LLM<br/>LM Studio (local) | DeepSeek (fallback)"]
+    DB[("🗄️ PostgreSQL<br/>+ pgvector")]
+    RAG["🔍 Módulo RAG<br/>Q&A con Citas"]
+    API["🌐 REST API<br/>FastAPI"]
+    BOT["💬 Telegram Bot"]
+
+    FUENTES --> AGENT
+    AGENT --> DB
+    DB --> RAG
+    RAG --> API
+    RAG --> BOT
+    DB --> API
+    DB --> BOT
+    LLM -.->|inferencia| AGENT
+    LLM -.->|inferencia| RAG
+
+    classDef sources fill:#FF9800,stroke:#E65100,color:#fff,font-weight:bold
+    classDef agent fill:#2196F3,stroke:#1565C0,color:#fff,font-weight:bold
+    classDef llm fill:#9C27B0,stroke:#6A1B9A,color:#fff,font-weight:bold
+    classDef db fill:#4CAF50,stroke:#2E7D32,color:#fff,font-weight:bold
+    classDef rag fill:#E91E63,stroke:#AD1457,color:#fff,font-weight:bold
+    classDef iface fill:#607D8B,stroke:#37474F,color:#fff,font-weight:bold
+
+    class FUENTES sources
+    class AGENT agent
+    class LLM llm
+    class DB db
+    class RAG rag
+    class API,BOT iface

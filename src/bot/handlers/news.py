@@ -718,7 +718,7 @@ async def cmd_digest(message: Message) -> None:
             response_parts = [f"{EMOJI['news']} *Resumen del dia*\n"]
             response_parts.append(f"_Total: {len(results)} noticias procesadas_\n")
 
-            for i, (processed, article) in enumerate(results[:5], 1):
+            for i, (processed, article) in enumerate(results, 1):
                 title = escape_md(article.title)
                 source = escape_md(article.source_name or "Desconocido")
                 response_parts.append(f"\n{i}\\. *{title}*\n   {EMOJI['source']} {source}")
@@ -773,7 +773,7 @@ async def cmd_categories(message: Message) -> None:
         for cat, count in categories:
             response_parts.append(f"\\- {escape_md(cat)} \\({count} articulos\\)")
 
-        response_parts.append(f"\n\nUsa /buscar <categoria> para filtrar\\.")
+        response_parts.append(f"\n\nUsa /buscar \\<categoria\\> para filtrar\\.")
 
         await message.answer(
             "\n".join(response_parts),

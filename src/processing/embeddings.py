@@ -291,6 +291,9 @@ def get_embedding_generator(
     """
     Factory function to get an embedding generator.
 
+    Tries LM Studio first (if configured). Falls back to SentenceTransformers
+    if LM Studio is not reachable.
+
     Args:
         use_lm_studio: If True, use LM Studio embeddings API.
                        If False, use SentenceTransformers.
@@ -303,5 +306,14 @@ def get_embedding_generator(
         use_lm_studio = settings.use_lm_studio_embeddings
 
     if use_lm_studio:
-        return LMStudioEmbeddingGenerator()
+        try:
+            generator = LMStudioEmbeddingGenerator()
+            # Test connectivity with a small request
+            generator.embed_single("test")
+            return generator
+        except Exception as e:
+            logger.warning(
+                "LM Studio embeddings not available, falling back to SentenceTransformers",
+                error=str(e),
+            )
     return EmbeddingGenerator()

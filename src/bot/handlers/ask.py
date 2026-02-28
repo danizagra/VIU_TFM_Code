@@ -99,9 +99,18 @@ async def handle_question(message: Message) -> None:
         )
 
     except Exception as e:
-        logger.error("Error processing RAG question", error=str(e), question=question[:50])
+        error_str = str(e)
+        logger.error("Error processing RAG question", error=error_str, question=question[:50])
         try:
             await thinking_msg.delete()
         except Exception:
             pass
-        await message.answer(f"{EMOJI['warning']} {MESSAGES['error']}")
+
+        # Provide specific error messages for common issues
+        if "Connection error" in error_str or "ConnectError" in error_str:
+            await message.answer(
+                f"{EMOJI['warning']} No se pudo conectar al servicio de embeddings "
+                f"(LM Studio). Verifica que este encendido o reinicia el bot."
+            )
+        else:
+            await message.answer(f"{EMOJI['warning']} {MESSAGES['error']}")

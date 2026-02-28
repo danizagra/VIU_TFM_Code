@@ -1,38 +1,38 @@
 {
-  "timestamp": "2026-01-23T10:20:00.723458",
+  "timestamp": "2026-02-07T19:55:38.825739",
   "dataset_size": 25,
-  "db_articles": 915,
+  "db_articles": 1688,
   "retrieval": {
     "precision_at_5": 1.0,
     "hit_rate": 1.0,
     "mrr": 1.0,
-    "avg_similarity": 0.6920384234807176
+    "avg_similarity": 0.7020484250318778
   },
   "generation": {
     "lm_studio": {
-      "confidence": 0.8207205082701268,
-      "topic_coverage": 0.52,
-      "citations_used": 2.8,
-      "faithfulness": 0.47500000000000003
+      "confidence": 0.8371483089000817,
+      "topic_coverage": 0.55,
+      "citations_used": 3.04,
+      "faithfulness": 0.7791666666666667
     },
     "deepseek": {
-      "confidence": 0.862951395732663,
-      "topic_coverage": 0.59,
-      "citations_used": 4.4,
-      "faithfulness": 0.76
+      "confidence": 0.8584616161730261,
+      "topic_coverage": 0.61,
+      "citations_used": 4.08,
+      "faithfulness": 0.7559999999999999
     }
   },
   "reranking_comparison": {
-    "without": 0.8207205082701268,
-    "with": 0.8406613146286546,
-    "improvement": 0.019940806358527796
+    "without": 0.8371483089000817,
+    "with": 0.8643300108492386,
+    "improvement": 0.02718170194915681
   },
   "fact_checking": {
-    "sample_size": 10,
-    "total_claims": 54,
-    "supported_claims": 40,
-    "unsupported_claims": 14,
-    "avg_hallucination_rate": 0.23499999999999996,
+    "sample_size": 25,
+    "total_claims": 135,
+    "supported_claims": 102,
+    "unsupported_claims": 33,
+    "avg_hallucination_rate": 0.24323809523809525,
     "claims_per_response": 5.4
   }
 }

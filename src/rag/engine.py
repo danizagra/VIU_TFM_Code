@@ -86,6 +86,10 @@ class RAGEngine:
         """
         Rerank articles using LLM in a single batch call.
 
+        Uses retry logic to handle LM Studio/MLX segfaults, and
+        max_tokens=300 to ensure reasoning models have enough
+        token budget for both thinking and output.
+
         Args:
             query: User's question.
             articles: List of (Article, score) tuples.
@@ -126,42 +130,76 @@ Ejemplo:
 
 Responde SOLO con las puntuaciones:"""
 
-        try:
-            response = self.llm.generate(
-                batch_prompt,
-                max_tokens=100,
-                temperature=0
-            )
-            scores_text = response.content.strip()
+        # Retry once on failure (LM Studio MLX segfaults are transient)
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                response = self.llm.generate(
+                    batch_prompt,
+                    max_tokens=300,
+                    temperature=0
+                )
+                scores_text = response.content.strip()
 
-            # Parse scores from response
-            llm_scores = {}
-            for match in re.finditer(r"\[(\d+)\]:\s*(\d+)", scores_text):
-                idx = int(match.group(1))
-                score = min(int(match.group(2)), 10) / 10.0
-                llm_scores[idx] = score
+                logger.info("Rerank LLM raw response", response=scores_text[:300])
 
-            # Combine scores
-            scored = []
-            for i, (article, original_score) in enumerate(candidates, 1):
-                llm_score = llm_scores.get(i, original_score)
-                combined_score = (original_score + llm_score) / 2
-                scored.append((article, combined_score))
+                # Parse scores: try strict format first [1]: 8
+                llm_scores = {}
+                for match in re.finditer(r"\[(\d+)\]:\s*(\d+)", scores_text):
+                    idx = int(match.group(1))
+                    score = min(int(match.group(2)), 10) / 10.0
+                    llm_scores[idx] = score
 
-            # Sort by combined score
-            scored.sort(key=lambda x: x[1], reverse=True)
+                # Fallback: try without brackets (1: 8 or 1 : 8)
+                if not llm_scores:
+                    for match in re.finditer(
+                        r"^(\d+)\s*:\s*(\d+)", scores_text, re.MULTILINE
+                    ):
+                        idx = int(match.group(1))
+                        score = min(int(match.group(2)), 10) / 10.0
+                        llm_scores[idx] = score
 
-            logger.info(
-                "Reranking completed",
-                top_score=scored[0][1] if scored else 0,
-                scores_parsed=len(llm_scores),
-            )
+                if not llm_scores:
+                    logger.warning(
+                        "No scores parsed from rerank response",
+                        raw_response=scores_text[:300],
+                    )
 
-            return scored[:top_k]
+                # Combine scores
+                scored = []
+                for i, (article, original_score) in enumerate(candidates, 1):
+                    llm_score = llm_scores.get(i, original_score)
+                    combined_score = (original_score + llm_score) / 2
+                    scored.append((article, combined_score))
 
-        except Exception as e:
-            logger.warning("Batch rerank failed, using original scores", error=str(e))
-            return articles[:top_k]
+                # Sort by combined score
+                scored.sort(key=lambda x: x[1], reverse=True)
+
+                logger.info(
+                    "Reranking completed",
+                    top_score=scored[0][1] if scored else 0,
+                    scores_parsed=len(llm_scores),
+                )
+
+                return scored[:top_k]
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        "Rerank attempt failed, retrying",
+                        attempt=attempt + 1,
+                        error=str(e),
+                    )
+                    import time
+                    time.sleep(3)
+                    continue
+                logger.warning(
+                    "Batch rerank failed after retries, using original scores",
+                    error=str(e),
+                )
+                return articles[:top_k]
+
+        return articles[:top_k]
 
     def ask(
         self,

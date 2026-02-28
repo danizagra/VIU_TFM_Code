@@ -1,0 +1,40 @@
+sequenceDiagram
+    actor Usuario
+    participant Bot as Telegram Bot /<br/>REST API
+    participant Agente as Agente Periodístico<br/>(LangGraph)
+    participant Fuentes as Fuentes Externas<br/>(RSS, NewsAPI, GNews)
+    participant LLM as Capa LLM<br/>(LM Studio / DeepSeek)
+    participant DB as PostgreSQL<br/>+ pgvector
+    participant RAG as Módulo RAG<br/>(Q&A con Citas)
+
+    rect rgb(232, 245, 255)
+        Note over Agente,DB: Pipeline del Agente Periodístico
+        Agente->>Fuentes: 1. Recolectar noticias
+        Fuentes-->>Agente: Artículos crudos
+        Agente->>LLM: 2. Generar embeddings
+        LLM-->>Agente: Vectores (768 dim)
+        Note over Agente: 3. Procesamiento NLP<br/>Clustering · Deduplicación
+        Agente->>LLM: 4. Generar contenido<br/>(resúmenes, titulares, ángulos)
+        LLM-->>Agente: Contenido generado
+        Agente->>DB: 5. Persistir artículos<br/>+ embeddings + contenido
+    end
+
+    rect rgb(252, 232, 243)
+        Note over Usuario,RAG: Consulta del Usuario (Q&A)
+        Usuario->>Bot: Pregunta en texto libre
+        Bot->>RAG: Procesar pregunta
+        RAG->>DB: 6. Búsqueda vectorial
+        DB-->>RAG: Artículos similares
+        RAG->>LLM: 7. Reranking + Generación
+        LLM-->>RAG: Respuesta con citas [1], [2]
+        RAG-->>Bot: Respuesta + fuentes
+        Bot-->>Usuario: Respuesta formateada
+    end
+
+    rect rgb(232, 252, 235)
+        Note over Usuario,DB: Consulta del Usuario (búsqueda directa)
+        Usuario->>Bot: /buscar, /ultimas, /digest
+        Bot->>DB: 8. Consultar artículos
+        DB-->>Bot: Resultados
+        Bot-->>Usuario: Lista de noticias
+    end
