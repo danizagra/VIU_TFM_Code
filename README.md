@@ -405,4 +405,4 @@ This project is part of a Master's Thesis and is for academic purposes.
 
 ## Author
 
-Daniel Zapata Grajales - Master in Artificial Intelligence, VIU 2026
+Daniel Zapata Grajalez - Master in Artificial Intelligence, VIU 2026
