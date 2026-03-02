@@ -18,6 +18,7 @@ System that automates the collection, filtering, clustering, and generation of j
 | Database | PostgreSQL 16 + pgvector 0.8.0 |
 | News Sources | NewsAPI, GNews, RSS |
 | RAG | Advanced RAG with batch reranking, source citations |
+| Query Routing | LLM-based Agent Router (prompt-based classification) |
 | Bot | Telegram (aiogram 3.x) with RAG integration |
 | API | FastAPI REST API |
 
@@ -140,57 +141,75 @@ poetry run python scripts/test_agent.py --output results.json
 
 ## System Flows
 
-### Flow 1: Telegram Bot Search (`/buscar`)
+### Flow 1: Agent Router (Query Classification)
+
+Every user query (both `/buscar` and free text) is first classified by the LLM-based Agent Router:
+
+```
+User query
+    │
+    ▼
+Agent Router (LLM, temperature=0.1)
+    │
+    ├── LOCAL_RAG ──────────► Only search local DB (pgvector)
+    │                         For: general topics, historical queries
+    │
+    ├── EXTERNAL_SEARCH ────► Go directly to external APIs (NewsAPI, GNews)
+    │                         For: "hoy", "última hora", emerging topics
+    │
+    └── COMBINED ───────────► Local first, external if low confidence
+                              For: ambiguous queries, broad topics
+                              Also used as fallback if router fails
+```
+
+### Flow 2: Telegram Bot Search (`/buscar`)
 
 ```
 User: /buscar Anthropic
          │
          ▼
-    Generate embedding for query
+    Agent Router classifies query
          │
-         ▼
-    Search similar articles in DB (pgvector)
+         ├── LOCAL_RAG ────────────► Vector search → filter → return (~1 sec)
          │
-         ▼
-    Apply relevance filter (keywords + similarity)
+         ├── EXTERNAL_SEARCH ──────► Fetch from NewsAPI/GNews → save → return
          │
-         ├── 3+ articles found ──────► Process & return results (~1 sec)
-         │
-         └── 0-2 articles found ─────► Search external sources
-                                              │
-                                              ▼
-                                       Run journalist agent
-                                       (NewsAPI, GNews)
-                                              │
-                                              ▼
-                                       Process new articles (~166 sec)
-                                              │
-                                              ▼
-                                       Return combined results
+         └── COMBINED ─────────────► Vector search in DB
+                                          │
+                                          ├── 3+ articles ──► Process & return (~1 sec)
+                                          │
+                                          └── 0-2 articles ─► Run journalist agent
+                                                                     │
+                                                                     ▼
+                                                              Fetch + process (~166 sec)
+                                                                     │
+                                                                     ▼
+                                                              Return combined results
 ```
 
-### Flow 2: RAG Question Answering (free text)
+### Flow 3: RAG Question Answering (free text)
 
 ```
 User: ¿Qué está pasando con la economía?
          │
          ▼
-    RAG Engine activated
+    Agent Router classifies query
          │
-         ▼
-    Retrieve relevant articles (vector search)
+         ├── LOCAL_RAG ────────► RAG only (vector search → rerank → generate)
          │
-         ▼
-    Batch reranking (LLM)
+         ├── EXTERNAL_SEARCH ──► Fetch external → save → RAG over all articles
          │
-         ▼
-    Generate answer with citations [1], [2]
-         │
-         ▼
-    Return response with sources
+         └── COMBINED ─────────► RAG first
+                                    │
+                                    ├── confidence > 0.3 ──► Return response
+                                    │
+                                    └── confidence ≤ 0.3 ──► Fetch external → retry RAG
+                                                                    │
+                                                                    ▼
+                                                             Return best response
 ```
 
-### Flow 3: Agent Pipeline
+### Flow 4: Agent Pipeline
 
 ```
 fetch → check_existing → filter → embed → load_similar → cluster → deduplicate → generate → quality → save
@@ -318,13 +337,15 @@ src/
 │   ├── graph.py        # Main workflow graph
 │   ├── state.py        # Agent state definitions
 │   └── nodes/          # Pipeline nodes (fetch, filter, embed, etc.)
+├── router/             # LLM-based query routing
+│   └── query_router.py # Agent Router (LOCAL_RAG / EXTERNAL_SEARCH / COMBINED)
 ├── api/                # FastAPI REST API
 │   ├── main.py         # App initialization
 │   ├── routes/         # Endpoint handlers
 │   └── schemas.py      # Pydantic models
 ├── bot/                # Telegram bot
 │   ├── main.py         # Bot initialization
-│   ├── handlers/       # Command handlers
+│   ├── handlers/       # Command handlers (use Agent Router)
 │   └── config.py       # Messages and constants
 ├── rag/                # RAG module
 │   ├── retriever.py    # Vector search
@@ -347,10 +368,13 @@ alembic/                # Database migrations
 
 | Scenario | Time | Description |
 |----------|------|-------------|
-| Local search (DB) | ~1 second | Articles already in database |
-| External search (agent) | ~166 seconds | Fetch + process new articles |
+| Agent Router classification | ~1-2 seconds | LLM classifies query into route |
+| LOCAL_RAG search | ~1 second | Articles already in database |
+| EXTERNAL_SEARCH (agent) | ~166 seconds | Fetch + process new articles |
+| COMBINED (local hit) | ~2-3 seconds | Router + local RAG |
+| COMBINED (external fallback) | ~168 seconds | Router + local + external |
 
-The bottleneck is LLM content generation (~14 sec/article). Once processed, articles are served instantly from cache.
+The bottleneck is LLM content generation (~14 sec/article). Once processed, articles are served instantly from cache. The Agent Router adds ~1-2s overhead but avoids unnecessary external searches for queries answerable locally.
 
 ---
 
