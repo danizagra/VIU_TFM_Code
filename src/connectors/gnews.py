@@ -128,6 +128,21 @@ class GNewsConnector(NewsConnector):
 
         return articles[:max_results]
 
+    @staticmethod
+    def _clean_query(query: str) -> str:
+        """Clean query for GNews API compatibility.
+
+        Removes characters that cause 400 errors (¿, ?, │, etc.)
+        and extracts only meaningful keywords.
+        """
+        import re
+
+        # Remove characters that GNews API doesn't handle
+        cleaned = re.sub(r'[¿?│|!¡"""\'«»]', ' ', query)
+        # Collapse multiple spaces
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned
+
     def _search(
         self,
         query: str,
@@ -139,7 +154,7 @@ class GNewsConnector(NewsConnector):
     ) -> dict:
         """Search articles using /search endpoint."""
         params = {
-            "q": query,
+            "q": self._clean_query(query),
             "token": self._api_key,
             "max": max_results
         }

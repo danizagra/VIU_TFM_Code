@@ -22,10 +22,12 @@ sequenceDiagram
     rect rgb(252, 232, 243)
         Note over Usuario,RAG: Consulta del Usuario (Q&A)
         Usuario->>Bot: Pregunta en texto libre
+        Bot->>LLM: 6. Agent Router: clasificar consulta
+        LLM-->>Bot: Ruta (LOCAL_RAG / EXTERNAL_SEARCH / COMBINED)
         Bot->>RAG: Procesar pregunta
-        RAG->>DB: 6. Búsqueda vectorial
+        RAG->>DB: 7. Búsqueda vectorial
         DB-->>RAG: Artículos similares
-        RAG->>LLM: 7. Reranking + Generación
+        RAG->>LLM: 8. Reranking + Generación
         LLM-->>RAG: Respuesta con citas [1], [2]
         RAG-->>Bot: Respuesta + fuentes
         Bot-->>Usuario: Respuesta formateada
@@ -34,7 +36,9 @@ sequenceDiagram
     rect rgb(232, 252, 235)
         Note over Usuario,DB: Consulta del Usuario (búsqueda directa)
         Usuario->>Bot: /buscar, /ultimas, /digest
-        Bot->>DB: 8. Consultar artículos
+        Bot->>LLM: 9. Agent Router: clasificar consulta
+        LLM-->>Bot: Ruta (LOCAL_RAG / EXTERNAL_SEARCH / COMBINED)
+        Bot->>DB: 10. Consultar artículos
         DB-->>Bot: Resultados
         Bot-->>Usuario: Lista de noticias
     end

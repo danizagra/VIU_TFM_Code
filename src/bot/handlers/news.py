@@ -2,6 +2,7 @@
 News command handlers.
 """
 
+import asyncio
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -16,6 +17,7 @@ from src.bot.config import (
     EMOJI,
     HIGH_SIMILARITY_THRESHOLD,
     MAX_MESSAGE_LENGTH,
+    MAX_NEWS_LIMIT,
     MESSAGES,
     MIN_ARTICLES_FOR_LOCAL_ONLY,
     MIN_RELEVANCE_THRESHOLD,
@@ -32,6 +34,7 @@ from src.processing.embeddings import get_embedding_generator
 from src.agent.graph import run_journalist_agent
 from src.generation.summarizer import ArticleSummarizer
 from src.llm.factory import get_available_client
+from src.router import QueryRouter, RouteDecision
 
 logger = structlog.get_logger()
 router = Router(name="news")
@@ -190,9 +193,9 @@ def _is_relevant_to_query(article: Article, query: str, min_keyword_match: int =
     For example, "Petro" matching "perro" due to embedding similarity.
 
     IMPORTANT: If the query contains proper nouns (capitalized words like "Colombia",
-    "Petro"), at least ONE proper noun must match for the article to be relevant.
-    This prevents "Seleccion Colombia de futbol" from matching articles about
-    Uruguay just because they contain "futbol".
+    "Petro"), at least one proper noun must match for the article to be relevant.
+    This prevents completely unrelated articles while allowing partial matches
+    (e.g., "Anthropic y Trump" matches articles about Anthropic OR about Trump).
 
     Args:
         article: The article to check
@@ -243,13 +246,14 @@ def _is_relevant_to_query(article: Article, query: str, min_keyword_match: int =
     # Count total keyword matches
     matches = sum(1 for kw in query_keywords if keyword_matches(kw))
 
-    # CRITICAL: If query has proper nouns, ALL must match
-    # This prevents "Seleccion Colombia futbol" matching "Seleccion Argentina futbol"
-    # Proper nouns define the specific context of the query
+    # If query has proper nouns, at least one must match
+    # This prevents completely unrelated articles from being included
+    # while still allowing articles that cover part of the query
+    # (e.g., "Anthropic y Donald Trump" should match articles about Anthropic OR Trump)
     if proper_nouns:
         proper_noun_matches = sum(1 for pn in proper_nouns if keyword_matches(pn))
-        if proper_noun_matches < len(proper_nouns):
-            return False  # Not all proper nouns matched - reject article
+        if proper_noun_matches == 0:
+            return False  # No proper nouns matched at all - reject article
 
     return matches >= min_keyword_match
 
@@ -465,13 +469,19 @@ async def cmd_latest_news(message: Message, command: CommandObject) -> None:
 
     Usage: /ultimas [limit]
     """
-    # Parse limit from command
+    # Parse limit from command - only accepts a number
     limit = DEFAULT_NEWS_LIMIT
     if command.args:
         try:
-            limit = min(int(command.args), 10)
+            limit = max(1, int(command.args))
         except ValueError:
-            pass
+            await message.answer(
+                f"{EMOJI['warning']} /ultimas solo acepta un numero\\.\n"
+                f"Ejemplo: `/ultimas 10`\n\n"
+                f"Para buscar por tema usa: `/buscar {escape_md(command.args)}`",
+                parse_mode="MarkdownV2",
+            )
+            return
 
     await message.answer(f"{EMOJI['robot']} Buscando las ultimas noticias...")
 
@@ -484,8 +494,9 @@ async def cmd_latest_news(message: Message, command: CommandObject) -> None:
                 await message.answer(MESSAGES["no_results"])
                 return
 
-            # Build response message inside session context
-            response_parts = [f"{EMOJI['news']} *Ultimas {len(results)} noticias:*\n"]
+            # Build response as list of article entries
+            header = f"{EMOJI['news']} *Ultimas {len(results)} noticias:*\n"
+            article_entries = []
 
             for i, (processed, article) in enumerate(results, 1):
                 preview = format_article_preview(
@@ -494,22 +505,120 @@ async def cmd_latest_news(message: Message, command: CommandObject) -> None:
                     published_at=article.published_at,
                     summary=processed.summary[:200] if processed.summary else None,
                 )
-                response_parts.append(f"\n{i}\\. {preview}\n")
+                article_entries.append(f"\n{i}\\. {preview}\n")
 
-            response = "\n".join(response_parts)
+        # Split into multiple messages at article boundaries
+        messages = []
+        current = header
+        for entry in article_entries:
+            if len(current) + len(entry) > MAX_MESSAGE_LENGTH - 50:
+                messages.append(current)
+                current = ""
+            current += entry
+        if current:
+            messages.append(current)
 
-        # Truncate if too long
-        if len(response) > MAX_MESSAGE_LENGTH:
-            response = response[:MAX_MESSAGE_LENGTH - 100] + "\n\n_\\.\\.\\. mensaje truncado_"
-
-        await message.answer(
-            response,
-            parse_mode="MarkdownV2",
-        )
+        for msg in messages:
+            await message.answer(
+                msg,
+                parse_mode="MarkdownV2",
+            )
 
     except Exception as e:
         logger.error("Error fetching latest news", error=str(e))
         await message.answer(MESSAGES["error"])
+
+
+def _route_search_query(query: str) -> RouteDecision:
+    """Route a search query using the LLM router. Falls back to COMBINED on failure."""
+    llm = get_available_client()
+    if not llm:
+        return RouteDecision(route="COMBINED", reasoning="No LLM disponible para routing")
+    query_router = QueryRouter(llm)
+    return query_router.route(query)
+
+
+def _search_local_articles(
+    query: str,
+    limit: int = DEFAULT_NEWS_LIMIT,
+    process_results: bool = True,
+) -> tuple[list[dict], int]:
+    """
+    Search local DB for articles and optionally process them.
+
+    Runs synchronously (meant to be called via asyncio.to_thread).
+    Creates its own DB session for thread safety.
+
+    Args:
+        query: Search query.
+        limit: Maximum number of results.
+        process_results: Whether to generate summaries for found articles.
+
+    Returns:
+        (results, local_count)
+    """
+    embedder = get_embedding_generator()
+    query_embedding = embedder.embed_single(query)
+
+    with get_db() as db:
+        article_repo = ArticleRepository(db)
+
+        similar_articles = list(article_repo.find_similar(
+            embedding=query_embedding,
+            limit=limit * 2,
+            threshold=VECTOR_SEARCH_THRESHOLD,
+        ))
+
+        if similar_articles:
+            original_count = len(similar_articles)
+            similar_articles = _filter_relevant_articles(
+                similar_articles, query, min_similarity=MIN_RELEVANCE_THRESHOLD
+            )
+            filtered_out = original_count - len(similar_articles)
+            if filtered_out > 0:
+                logger.info(f"Filtered out {filtered_out} irrelevant articles", query=query)
+
+        local_count = len(similar_articles)
+        if local_count > 0:
+            logger.info(f"Found {local_count} relevant articles in DB", query=query)
+
+        results = []
+        if process_results and local_count > 0:
+            results = process_articles_without_summary(db, similar_articles[:limit], query)
+
+    return results, local_count
+
+
+def _research_after_agent(
+    query: str,
+    limit: int = DEFAULT_NEWS_LIMIT,
+) -> list[dict]:
+    """
+    Re-search DB after agent fetch and process articles.
+
+    Runs synchronously (meant to be called via asyncio.to_thread).
+    Creates its own DB session for thread safety.
+
+    Returns:
+        List of result dicts with summaries.
+    """
+    embedder = get_embedding_generator()
+    query_embedding = embedder.embed_single(query)
+
+    with get_db() as db:
+        article_repo = ArticleRepository(db)
+        similar_articles = list(article_repo.find_similar(
+            embedding=query_embedding,
+            limit=limit * 2,
+            threshold=VECTOR_SEARCH_THRESHOLD,
+        ))
+        if similar_articles:
+            similar_articles = _filter_relevant_articles(
+                similar_articles, query, min_similarity=MIN_RELEVANCE_THRESHOLD
+            )
+        if similar_articles:
+            return process_articles_without_summary(db, similar_articles[:limit], query)
+    return []
 
 
 @router.message(Command("buscar"))
@@ -540,126 +649,130 @@ async def cmd_search_news(message: Message, command: CommandObject) -> None:
     # HIGH_SIMILARITY_THRESHOLD (0.65): Strong semantic match (no keyword needed)
 
     try:
-        embedder = get_embedding_generator()
-        query_embedding = embedder.embed_single(query)
+        # Step 1: Route the query using LLM
+        route = await asyncio.to_thread(_route_search_query, query)
+        logger.info(
+            "Router decision",
+            route=route.route,
+            reasoning=route.reasoning,
+            query=query[:50],
+        )
 
-        # Step 1: Search for similar articles and decide if we need external sources
-        # IMPORTANT: Process articles in the SAME session to avoid detached instance errors
         results = []
         local_count = 0
-        needs_external = True
 
-        with get_db() as db:
-            article_repo = ArticleRepository(db)
-
-            # Cast wide net with vector search
-            similar_articles = list(article_repo.find_similar(
-                embedding=query_embedding,
-                limit=DEFAULT_NEWS_LIMIT * 2,  # Fetch more to filter
-                threshold=VECTOR_SEARCH_THRESHOLD,
-            ))
-
-            # Apply stricter relevance filter (similarity + keyword matching)
-            # This prevents false positives like "Petro" matching "perro"
-            if similar_articles:
-                original_count = len(similar_articles)
-                similar_articles = _filter_relevant_articles(
-                    similar_articles, query, min_similarity=MIN_RELEVANCE_THRESHOLD
-                )
-                filtered_out = original_count - len(similar_articles)
-                if filtered_out > 0:
-                    logger.info(f"Filtered out {filtered_out} irrelevant articles", query=query)
-
-            local_count = len(similar_articles)
+        if route.route == "LOCAL_RAG":
+            # Only search local DB
+            results, local_count = await asyncio.to_thread(
+                _search_local_articles, query, DEFAULT_NEWS_LIMIT, True
+            )
             if local_count > 0:
-                logger.info(f"Found {local_count} relevant articles in DB", query=query)
-
-            # Decide if we need external sources
-            # - 0 articles: definitely need external
-            # - 1-2 articles: search external for better coverage/fresher content
-            # - 3+ articles: sufficient local coverage, process NOW in this session
-            needs_external = local_count < MIN_ARTICLES_FOR_LOCAL_ONLY
-
-            if not needs_external:
-                # 3+ local articles - process them in THIS session to avoid detached instance error
                 await status_msg.edit_text(
-                    f"{EMOJI['robot']} Encontre {local_count} articulos relevantes\\. Procesando\\.\\.\\.",
+                    f"{EMOJI['robot']} Encontre {local_count} articulos relevantes\\. Procesados\\.",
                     parse_mode="MarkdownV2",
                 )
-                results = process_articles_without_summary(db, similar_articles[:DEFAULT_NEWS_LIMIT], query)
 
-        # Step 2: If we need external sources, fetch them (outside the first session)
-        if needs_external:
-            if local_count == 0:
-                await status_msg.edit_text(
-                    f"{EMOJI['robot']} No encontre noticias en la base de datos\\.\n"
-                    f"Buscando en fuentes externas \\(NewsAPI, GNews\\)\\.\\.\\.",
-                    parse_mode="MarkdownV2",
-                )
-                logger.info("No local articles, running agent", query=query)
-            else:
-                await status_msg.edit_text(
-                    f"{EMOJI['robot']} Solo encontre {local_count} articulo\\(s\\) en la base de datos\\.\n"
-                    f"Buscando mas en fuentes externas para mejor cobertura\\.\\.\\.",
-                    parse_mode="MarkdownV2",
-                )
-                logger.info(f"Only {local_count} local articles, running agent for better coverage", query=query)
+        elif route.route == "EXTERNAL_SEARCH":
+            # Go directly to external sources
+            await status_msg.edit_text(
+                f"{EMOJI['robot']} Buscando en fuentes externas \\(NewsAPI, GNews\\)\\.\\.\\.",
+                parse_mode="MarkdownV2",
+            )
+            logger.info("Router chose external search", query=query)
 
             try:
-                agent_result = run_journalist_agent(
+                agent_result = await asyncio.to_thread(
+                    run_journalist_agent,
                     query=query,
                     max_articles=15,
                     sources=["newsapi", "gnews"],
                     use_persistence=True,
                 )
                 fetched = len(agent_result.get("raw_articles", []))
-                saved = len(agent_result.get("saved_article_ids", []))
+                logger.info("Agent completed", fetched=fetched)
 
-                logger.info("Agent completed", fetched=fetched, saved=saved)
-
-                if fetched == 0 and local_count == 0:
-                    # No local AND no external = nothing to show
-                    await status_msg.edit_text(
-                        f"{EMOJI['warning']} No encontre noticias sobre '{escape_md(query)}' en ninguna fuente\\.",
-                        parse_mode="MarkdownV2",
-                    )
-                    return
-                elif fetched > 0:
+                if fetched > 0:
                     await status_msg.edit_text(
                         f"{EMOJI['check']} Descargue {fetched} articulos nuevos\\. Procesando resultados\\.\\.\\.",
                         parse_mode="MarkdownV2",
                     )
-
             except Exception as agent_err:
                 logger.error("Agent failed", error=str(agent_err))
+
+            # Search DB for combined results (existing + newly fetched)
+            results = await asyncio.to_thread(
+                _research_after_agent, query, DEFAULT_NEWS_LIMIT
+            )
+
+        else:
+            # COMBINED: local first, external if insufficient
+            results, local_count = await asyncio.to_thread(
+                _search_local_articles, query, DEFAULT_NEWS_LIMIT, True
+            )
+
+            needs_external = local_count < MIN_ARTICLES_FOR_LOCAL_ONLY
+
+            if not needs_external:
+                await status_msg.edit_text(
+                    f"{EMOJI['robot']} Encontre {local_count} articulos relevantes\\. Procesados\\.",
+                    parse_mode="MarkdownV2",
+                )
+
+            if needs_external:
                 if local_count == 0:
-                    # No local and agent failed = nothing to show
                     await status_msg.edit_text(
-                        f"{EMOJI['warning']} Error buscando en fuentes externas: {escape_md(str(agent_err)[:100])}",
+                        f"{EMOJI['robot']} No encontre noticias en la base de datos\\.\n"
+                        f"Buscando en fuentes externas \\(NewsAPI, GNews\\)\\.\\.\\.",
                         parse_mode="MarkdownV2",
                     )
-                    return
-                # If we have some local articles, continue with those despite agent error
-                logger.info("Agent failed but we have local articles, continuing", local_count=local_count)
-
-            # Re-search to get combined results (local + newly fetched)
-            query_embedding = embedder.embed_single(query)
-            with get_db() as db:
-                article_repo = ArticleRepository(db)
-                similar_articles = list(article_repo.find_similar(
-                    embedding=query_embedding,
-                    limit=DEFAULT_NEWS_LIMIT * 2,  # Fetch more to filter
-                    threshold=VECTOR_SEARCH_THRESHOLD,
-                ))
-                # Apply strict filter again
-                if similar_articles:
-                    similar_articles = _filter_relevant_articles(
-                        similar_articles, query, min_similarity=MIN_RELEVANCE_THRESHOLD
-                    )
-                if similar_articles:
-                    results = process_articles_without_summary(db, similar_articles[:DEFAULT_NEWS_LIMIT], query)
+                    logger.info("Combined route: no local articles, running agent", query=query)
                 else:
-                    results = []
+                    await status_msg.edit_text(
+                        f"{EMOJI['robot']} Solo encontre {local_count} articulo\\(s\\) en la base de datos\\.\n"
+                        f"Buscando mas en fuentes externas para mejor cobertura\\.\\.\\.",
+                        parse_mode="MarkdownV2",
+                    )
+                    logger.info(f"Combined route: only {local_count} local articles, running agent", query=query)
+
+                try:
+                    agent_result = await asyncio.to_thread(
+                        run_journalist_agent,
+                        query=query,
+                        max_articles=15,
+                        sources=["newsapi", "gnews"],
+                        use_persistence=True,
+                    )
+                    fetched = len(agent_result.get("raw_articles", []))
+                    saved = len(agent_result.get("saved_article_ids", []))
+
+                    logger.info("Agent completed", fetched=fetched, saved=saved)
+
+                    if fetched == 0 and local_count == 0:
+                        await status_msg.edit_text(
+                            f"{EMOJI['warning']} No encontre noticias sobre '{escape_md(query)}' en ninguna fuente\\.",
+                            parse_mode="MarkdownV2",
+                        )
+                        return
+                    elif fetched > 0:
+                        await status_msg.edit_text(
+                            f"{EMOJI['check']} Descargue {fetched} articulos nuevos\\. Procesando resultados\\.\\.\\.",
+                            parse_mode="MarkdownV2",
+                        )
+
+                except Exception as agent_err:
+                    logger.error("Agent failed", error=str(agent_err))
+                    if local_count == 0:
+                        await status_msg.edit_text(
+                            f"{EMOJI['warning']} Error buscando en fuentes externas: {escape_md(str(agent_err)[:100])}",
+                            parse_mode="MarkdownV2",
+                        )
+                        return
+                    logger.info("Agent failed but we have local articles, continuing", local_count=local_count)
+
+                # Re-search to get combined results (local + newly fetched)
+                results = await asyncio.to_thread(
+                    _research_after_agent, query, DEFAULT_NEWS_LIMIT
+                )
 
         # No results after everything
         if not results:

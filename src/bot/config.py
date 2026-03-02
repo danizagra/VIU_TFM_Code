@@ -7,7 +7,7 @@ MAX_MESSAGE_LENGTH = 4096
 
 # Default pagination
 DEFAULT_NEWS_LIMIT = 5
-MAX_NEWS_LIMIT = 10
+MAX_NEWS_LIMIT = 20
 
 # Timeout for API calls (seconds)
 API_TIMEOUT = 30

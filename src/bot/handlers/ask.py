@@ -2,17 +2,39 @@
 RAG question handler for free-form queries.
 """
 
+import asyncio
+
 import structlog
 from aiogram import F, Router
 from aiogram.types import Message
 
+from src.agent.graph import run_journalist_agent
 from src.bot.config import EMOJI, MAX_MESSAGE_LENGTH, MESSAGES
 from src.bot.utils import escape_md
+from src.llm.factory import get_available_client
 from src.rag.engine import RAGEngine
+from src.rag.generator import RAGResponse
+from src.router import QueryRouter, RouteDecision
 from src.storage.database import get_db
 
 logger = structlog.get_logger()
 router = Router(name="ask")
+
+
+def _route_query(question: str) -> RouteDecision:
+    """Route a query using the LLM router. Falls back to COMBINED on failure."""
+    llm = get_available_client()
+    if not llm:
+        return RouteDecision(route="COMBINED", reasoning="No LLM disponible para routing")
+    query_router = QueryRouter(llm)
+    return query_router.route(question)
+
+
+def _run_rag_query(question: str, max_sources: int = 5) -> RAGResponse:
+    """Run RAG query synchronously. Creates its own DB session (thread-safe)."""
+    with get_db() as db:
+        engine = RAGEngine(db, use_reranking=True)
+        return engine.ask(question=question, max_sources=max_sources)
 
 
 def format_rag_response(answer: str, sources: list, confidence: float) -> str:
@@ -46,6 +68,7 @@ async def handle_question(message: Message) -> None:
     Handle free-form questions using RAG.
 
     Any message that doesn't start with / is treated as a question.
+    If local RAG confidence is low, searches external sources and retries.
     """
     question = message.text.strip()
 
@@ -58,17 +81,105 @@ async def handle_question(message: Message) -> None:
     thinking_msg = await message.answer(f"{EMOJI['robot']} {MESSAGES['thinking']}")
 
     try:
-        with get_db() as db:
-            engine = RAGEngine(db, use_reranking=True)
-            response = engine.ask(
-                question=question,
-                max_sources=5,
+        # Step 1: Route the query using LLM
+        route = await asyncio.to_thread(_route_query, question)
+        logger.info(
+            "Router decision",
+            route=route.route,
+            reasoning=route.reasoning,
+            query=question[:50],
+        )
+
+        response = None
+
+        if route.route == "LOCAL_RAG":
+            # Only local RAG, no external fallback
+            response = await asyncio.to_thread(_run_rag_query, question, 5)
+
+        elif route.route == "EXTERNAL_SEARCH":
+            # Go directly to external sources, then RAG
+            await thinking_msg.edit_text(
+                f"{EMOJI['robot']} Buscando en fuentes externas \\(NewsAPI, GNews\\)\\.\\.\\.",
+                parse_mode="MarkdownV2",
             )
+
+            try:
+                agent_result = await asyncio.to_thread(
+                    run_journalist_agent,
+                    query=question,
+                    max_articles=10,
+                    sources=["newsapi", "gnews"],
+                    use_persistence=True,
+                )
+                fetched = len(agent_result.get("raw_articles", []))
+                logger.info("Agent completed for external search", fetched=fetched)
+
+                if fetched > 0:
+                    await thinking_msg.edit_text(
+                        f"{EMOJI['check']} Encontre {fetched} articulos nuevos\\. Generando respuesta\\.\\.\\.",
+                        parse_mode="MarkdownV2",
+                    )
+            except Exception as agent_err:
+                logger.error("Agent failed during external search", error=str(agent_err))
+
+            # RAG over whatever we have (new + existing)
+            response = await asyncio.to_thread(_run_rag_query, question, 5)
+
+        else:
+            # COMBINED: local RAG first, external if confidence is low
+            response = await asyncio.to_thread(_run_rag_query, question, 5)
+
+            needs_external = response.confidence <= 0.3 or len(response.sources) == 0
+
+            if needs_external:
+                logger.info(
+                    "Combined route: low RAG confidence, trying external sources",
+                    confidence=response.confidence,
+                    sources=len(response.sources),
+                )
+
+                try:
+                    await thinking_msg.edit_text(
+                        f"{EMOJI['robot']} No encontre suficiente informacion local\\.\n"
+                        f"Buscando en fuentes externas \\(NewsAPI, GNews\\)\\.\\.\\.",
+                        parse_mode="MarkdownV2",
+                    )
+
+                    agent_result = await asyncio.to_thread(
+                        run_journalist_agent,
+                        query=question,
+                        max_articles=10,
+                        sources=["newsapi", "gnews"],
+                        use_persistence=True,
+                    )
+
+                    fetched = len(agent_result.get("raw_articles", []))
+                    saved = len(agent_result.get("saved_article_ids", []))
+                    logger.info("Agent completed for RAG", fetched=fetched, saved=saved)
+
+                    if fetched > 0:
+                        await thinking_msg.edit_text(
+                            f"{EMOJI['check']} Encontre {fetched} articulos nuevos\\. Generando respuesta\\.\\.\\.",
+                            parse_mode="MarkdownV2",
+                        )
+
+                        new_response = await asyncio.to_thread(_run_rag_query, question, 5)
+
+                        if new_response.confidence > response.confidence:
+                            response = new_response
+                            logger.info(
+                                "Using improved RAG response after external fetch",
+                                confidence=response.confidence,
+                                sources=len(response.sources),
+                            )
+
+                except Exception as agent_err:
+                    logger.error("Agent failed during RAG fallback", error=str(agent_err))
 
         # Delete thinking message
         await thinking_msg.delete()
 
-        if not response.sources and response.confidence == 0:
+        if response.confidence <= 0.3 and not response.sources:
             await message.answer(
                 f"{EMOJI['warning']} {MESSAGES['no_results']}\n\n"
                 f"Intenta con otra pregunta o usa /buscar para explorar temas."

@@ -5,6 +5,7 @@ Generates answers based on retrieved articles with proper citations.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Sequence
@@ -190,13 +191,21 @@ FORMATO:
             score += 0.1
 
         # Check for "no information" type responses
+        # Normalize accents so "información" matches "informacion", etc.
+        normalized = unicodedata.normalize("NFKD", answer.lower())
+        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+
         no_info_phrases = [
             "no tengo informacion",
             "no hay informacion",
             "no puedo responder",
             "no encuentro",
+            "no dispongo",
+            "no cuento con",
+            "los articulos no mencionan",
+            "no se menciona",
         ]
-        if any(phrase in answer.lower() for phrase in no_info_phrases):
+        if any(phrase in normalized for phrase in no_info_phrases):
             score = 0.2
 
         return min(score, 1.0)
@@ -270,8 +279,14 @@ Responde basandote UNICAMENTE en los articulos anteriores, citando las fuentes c
             confidence=confidence,
         )
 
+        # If confidence is very low and no citations were used, don't show misleading sources
+        if confidence <= 0.3 and not used_sources:
+            final_sources = []
+        else:
+            final_sources = used_sources if used_sources else sources[:3]
+
         return RAGResponse(
             answer=answer,
-            sources=used_sources if used_sources else sources[:3],  # Fallback to top 3
+            sources=final_sources,
             confidence=confidence,
         )
